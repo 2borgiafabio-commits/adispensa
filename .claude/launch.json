@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "adispensa",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8468"],
+      "port": 8468
+    }
+  ]
+}
