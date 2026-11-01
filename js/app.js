@@ -312,7 +312,7 @@ function viewWelcome() {
       <button class="btn block" data-act="w-back">Indietro</button>`;
   }
   return `<div class="welcome">
-    <div class="logo"><i class="ti ti-basket"></i></div>
+    <img class="logo" src="icons/icon-512.png" alt="">
     <h1>A'Dispensa</h1>
     <p class="lead">Le scorte di casa, condivise in famiglia.</p>
     ${body}
