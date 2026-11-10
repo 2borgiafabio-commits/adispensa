@@ -17,13 +17,17 @@ const COLUMNS = {
   items: ['id', 'household_id', 'name', 'category_id', 'store_id', 'unit', 'qty', 'min_qty', 'buy_qty',
     'status', 'on_list', 'expiry', 'notes', 'updated_at', 'updated_by'],
   events: ['id', 'household_id', 'item_id', 'type', 'qty', 'at', 'by_user'],
+  receipts: ['id', 'household_id', 'path', 'thumb_path', 'taken_on', 'store_id', 'total', 'notes', 'created_at', 'by_user'],
 };
+const RECEIPTS_BUCKET = 'receipts';
 
 const emptyState = () => ({
   household: null,          // { id, name, code }
   me: { id: null, nickname: '' },
   mode: 'local',            // 'local' = solo questo telefono, 'cloud' = condiviso
   categories: [], stores: [], items: [], events: [], members: [],
+  receipts: [],             // scontrini (solo la scheda: le foto stanno nello Storage)
+  receiptsReady: true,      // false se sul database manca ancora la parte scontrini
   queue: [],                // modifiche da mandare al database
   lastSync: null,
 });
@@ -399,7 +403,7 @@ export async function createHousehold({ name, nickname, withCommon, cloud }) {
     state.mode = 'local';
     state.me.id = state.me.id || uid();
   }
-  Object.assign(state, { household, categories: [], stores: [], items: [], events: [], queue: [] });
+  Object.assign(state, { household, categories: [], stores: [], items: [], events: [], receipts: [], queue: [] });
   state.me.nickname = nickname.trim();
   state.members = [{ user_id: state.me.id, nickname: state.me.nickname }];
   seedHousehold(withCommon);
@@ -426,7 +430,7 @@ export async function joinHousehold({ code, nickname }) {
   const h = data[0];
   Object.assign(state, {
     household: { id: h.id, name: h.name, code: h.code }, mode: 'cloud',
-    categories: [], stores: [], items: [], events: [], members: [], queue: [],
+    categories: [], stores: [], items: [], events: [], members: [], receipts: [], queue: [],
   });
   state.me.nickname = nickname.trim();
   save();
@@ -491,8 +495,69 @@ export async function leaveHousehold() {
 }
 
 export function exportData() {
-  const { household, categories, stores, items, events } = state;
-  return JSON.stringify({ exported_at: nowIso(), household, categories, stores, items, events }, null, 2);
+  const { household, categories, stores, items, events, receipts } = state;
+  return JSON.stringify({ exported_at: nowIso(), household, categories, stores, items, events, receipts }, null, 2);
+}
+
+// ---------- Scontrini (foto) ----------
+
+export const canUseReceipts = () => state.mode === 'cloud' && state.receiptsReady;
+
+// Carica la foto (intera + anteprima) e crea la scheda dello scontrino
+export async function addReceipt({ full, thumb }) {
+  if (state.mode !== 'cloud') throw new Error('Gli scontrini si salvano online: collega prima la casa alla famiglia.');
+  if (!navigator.onLine) throw new Error('Serve la rete per caricare lo scontrino.');
+  const c = await ensureSession();
+  const id = uid();
+  const hid = state.household.id;
+  const path = `${hid}/${id}.jpg`;
+  const thumbPath = `${hid}/${id}_t.jpg`;
+  const bucket = c.storage.from(RECEIPTS_BUCKET);
+  const up = await bucket.upload(path, full, { contentType: 'image/jpeg', upsert: false });
+  if (up.error) throw friendlyError(up.error);
+  const upT = await bucket.upload(thumbPath, thumb, { contentType: 'image/jpeg', upsert: false });
+  const d = new Date();
+  const row = {
+    id, household_id: hid, path, thumb_path: upT.error ? null : thumbPath,
+    taken_on: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+    store_id: null, total: null, notes: null, created_at: nowIso(), by_user: state.me.id,
+  };
+  put('receipts', row);
+  commit();
+  return row;
+}
+
+export function updateReceipt(row) {
+  put('receipts', { ...byId('receipts', row.id), ...row });
+  commit();
+}
+
+export async function deleteReceipt(id) {
+  const r = byId('receipts', id);
+  if (!r) return;
+  const c = await ensureSession();
+  const { error } = await c.storage.from(RECEIPTS_BUCKET).remove([r.path, r.thumb_path].filter(Boolean));
+  if (error) throw friendlyError(error);
+  remove('receipts', id);
+  commit();
+}
+
+// Link temporanei (1 ora) per vedere le foto private
+const urlCache = new Map();
+export function cachedReceiptUrl(path) {
+  const hit = urlCache.get(path);
+  return hit && hit.exp > Date.now() + 60000 ? hit.url : null;
+}
+export async function receiptUrls(paths) {
+  const now = Date.now();
+  const missing = paths.filter((p) => p && !(urlCache.get(p)?.exp > now + 60000));
+  if (missing.length) {
+    const c = await ensureSession();
+    const { data, error } = await c.storage.from(RECEIPTS_BUCKET).createSignedUrls(missing, 3600);
+    if (error) throw friendlyError(error);
+    data.forEach((x) => { if (x.signedUrl) urlCache.set(x.path, { url: x.signedUrl, exp: now + 3600 * 1000 }); });
+  }
+  return Object.fromEntries(paths.map((p) => [p, urlCache.get(p)?.url || null]));
 }
 
 // ---------- Sincronizzazione ----------
@@ -619,7 +684,16 @@ export async function pull() {
   ]);
   if (h.error) throw h.error;
   if (!h.data) { setSync('error', 'Non fai più parte di questa casa.'); return; }
-  Object.assign(state, { household: h.data, members: members.data || [], categories, stores, items, events });
+  // Gli scontrini a parte: se sul database manca ancora la loro tabella, il resto funziona lo stesso
+  let receipts = [];
+  try {
+    receipts = await fetchAll(c, 'receipts', (q) => q.eq('household_id', hid));
+    state.receiptsReady = true;
+  } catch (err) {
+    if (isNetworkError(err)) throw err;
+    state.receiptsReady = false;
+  }
+  Object.assign(state, { household: h.data, members: members.data || [], categories, stores, items, events, receipts });
   // Riapplico le modifiche locali non ancora inviate
   for (const op of state.queue) {
     if (op.op === 'upsert') upsertLocal(op.table, { ...op.row });
@@ -656,7 +730,7 @@ async function startRealtime() {
     const hid = state.household.id;
     const onChange = () => { clearTimeout(pullTimer); pullTimer = setTimeout(syncNow, 800); };
     channel = c.channel(`casa-${hid}`);
-    ['items', 'categories', 'stores', 'members'].forEach((table) => {
+    ['items', 'categories', 'stores', 'members', 'receipts'].forEach((table) => {
       channel.on('postgres_changes', { event: '*', schema: 'public', table, filter: `household_id=eq.${hid}` }, onChange);
     });
     channel.subscribe();

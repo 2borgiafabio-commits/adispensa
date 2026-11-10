@@ -8,8 +8,12 @@ const app = document.getElementById('app');
 const sheetRoot = document.getElementById('sheet-root');
 const toastRoot = document.getElementById('toast');
 
+// Le scadenze per ora sono nascoste (il codice e i dati restano: basta rimettere true)
+const SHOW_EXPIRY = false;
+
 const ui = {
   tab: pref('tab', 'spesa'),
+  uploading: null,
   store: 'all',
   scorteQ: '',
   addQ: '',
@@ -90,11 +94,10 @@ function header(title, sub) {
 
 function tabbar() {
   const n = state.items.filter((i) => i.on_list).length;
-  const e = expiringSoon();
   const tabs = [
     ['spesa', 'ti-shopping-cart', 'Spesa', n],
     ['scorte', 'ti-box', 'Scorte', 0],
-    ['scadenze', 'ti-calendar-due', 'Scadenze', e],
+    SHOW_EXPIRY ? ['scadenze', 'ti-calendar-due', 'Scadenze', expiringSoon()] : ['scontrini', 'ti-receipt', 'Scontrini', 0],
     ['aggiungi', 'ti-circle-plus', 'Aggiungi', 0],
   ];
   return `<nav class="tabbar">${tabs.map(([k, icon, label, badge]) => `
@@ -168,12 +171,6 @@ function scorteMeta(it) {
   return text ? `<span class="meta ${it.status}">${text}</span>` : '';
 }
 
-const STATUS_ACTIONS = {
-  ok: { act: 'st-ok', label: 'C\'è', cls: 'a-ok', icon: 'ti-check' },
-  low: { act: 'st-low', label: 'Sta finendo', cls: 'a-warn', icon: 'ti-hourglass-low' },
-  out: { act: 'st-out', label: 'Finito', cls: 'a-danger', icon: 'ti-alert-circle' },
-};
-
 function viewScorte() {
   const all = state.items;
   const q = S.normalize(ui.scorteQ);
@@ -184,11 +181,12 @@ function viewScorte() {
   if (!all.length) {
     return { head, fixed, body: empty('ti-box', 'Nessun prodotto', 'Aggiungi le cose che tenete in casa.', 'Nuovo prodotto', 'new') };
   }
+  // Swipe a sinistra: un solo gesto, "mettilo nella spesa" (o toglilo se c'è già)
   const row = (it) => swRow(it, {
     right: `${it.on_list ? '<i class="ti ti-shopping-cart in-list" aria-label="In lista"></i>' : ''}${scorteMeta(it)}`,
-    actions: S.isTracked(it)
-      ? [{ act: 'dec', label: '−1', cls: 'a-gray', icon: 'ti-minus' }, { act: 'inc', label: '+1', cls: 'a-ok', icon: 'ti-plus' }]
-      : ['ok', 'low', 'out'].filter((s) => s !== it.status).map((s) => STATUS_ACTIONS[s]),
+    actions: it.on_list
+      ? [{ act: 'unlist', label: 'Togli', cls: 'a-gray', icon: 'ti-x' }]
+      : [{ act: 'tolist', label: 'In spesa', cls: 'a-ok', icon: 'ti-shopping-cart-plus' }],
   });
   const groups = groupByCategory(items).map((g) => groupBlock({ ...g, items: g.items.sort(byName) }, row)).join('');
   const body = (groups || `<p class="hint">Nessun prodotto trovato.</p>`)
@@ -228,6 +226,106 @@ function viewScadenze() {
     return `<section class="group" style="--c:${color}"><div class="group-h">${title}<span class="n">${rows.length}</span></div>${rows.map(row).join('')}</section>`;
   }).join('') + addBtn;
   return { head, body };
+}
+
+function viewScontrini() {
+  const list = [...state.receipts].sort((a, b) => b.taken_on.localeCompare(a.taken_on) || b.created_at.localeCompare(a.created_at));
+  const month = new Date().toISOString().slice(0, 7);
+  const thisMonth = list.filter((r) => r.taken_on.slice(0, 7) === month).length;
+  const head = header('Scontrini', list.length
+    ? `${plural(list.length, 'scontrino', 'scontrini')} · ${thisMonth} questo mese`
+    : 'Le foto degli scontrini, per tutta la famiglia');
+
+  if (state.mode !== 'cloud') {
+    return { head, body: empty('ti-receipt', 'Serve la casa condivisa', 'Gli scontrini si salvano online: collega la casa alla famiglia da Impostazioni.') };
+  }
+  if (!state.receiptsReady) {
+    return { head, body: empty('ti-database-cog', 'Manca un passaggio sul database', 'Su Supabase va eseguito il file 002_scontrini.sql (vedi LEGGIMI).') };
+  }
+
+  const upload = `<label class="btn primary block upload ${ui.uploading ? 'busy' : ''}" for="receipt-file">
+      <i class="ti ${ui.uploading ? 'ti-loader-2' : 'ti-camera'}"></i>${ui.uploading || 'Fotografa o carica uno scontrino'}
+    </label>`;
+  if (!list.length) {
+    return { head, body: `${upload}${empty('ti-receipt', 'Nessuno scontrino', 'Per ora le salviamo e basta: più avanti ci serviranno per vedere quanto si spende e per cosa.')}` };
+  }
+
+  const groups = [];
+  list.forEach((r) => {
+    const key = r.taken_on.slice(0, 7);
+    let g = groups.find((x) => x.key === key);
+    if (!g) {
+      const [y, m] = key.split('-').map(Number);
+      g = { key, label: capitalize(new Date(y, m - 1, 1).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })), items: [] };
+      groups.push(g);
+    }
+    g.items.push(r);
+  });
+  const card = (r) => {
+    const p = r.thumb_path || r.path;
+    const src = S.cachedReceiptUrl(p);
+    const store = S.byId('stores', r.store_id);
+    const day = Number(r.taken_on.slice(8, 10));
+    return `<button class="rcard" data-act="receipt" data-id="${r.id}">
+      <img data-path="${esc(p)}" ${src ? `src="${esc(src)}"` : ''} alt="Scontrino del ${day}">
+      <span>${day}${store ? ` · ${esc(store.name)}` : ''}</span>
+    </button>`;
+  };
+  const body = upload + groups.map((g) => `<div class="section-h">${g.label}</div><div class="rgrid">${g.items.map(card).join('')}</div>`).join('');
+  return { head, body };
+}
+
+// Carica le anteprime che non hanno ancora il link
+async function fillThumbs() {
+  const imgs = [...app.querySelectorAll('img[data-path]:not([src])')];
+  if (!imgs.length) return;
+  try {
+    const urls = await S.receiptUrls([...new Set(imgs.map((i) => i.dataset.path))]);
+    imgs.forEach((i) => { if (urls[i.dataset.path]) i.src = urls[i.dataset.path]; });
+  } catch { /* offline: restano grigie */ }
+}
+
+// Riduce la foto prima di caricarla (lo scontrino resta leggibile, il file pesa poco)
+async function compressImage(file, maxSide, quality) {
+  let src;
+  try {
+    src = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    src = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Non riesco a leggere questa foto.'));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const w0 = src.width || src.naturalWidth;
+  const h0 = src.height || src.naturalHeight;
+  const scale = Math.min(1, maxSide / Math.max(w0, h0));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w0 * scale);
+  canvas.height = Math.round(h0 * scale);
+  canvas.getContext('2d').drawImage(src, 0, 0, canvas.width, canvas.height);
+  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Foto non valida.'))), 'image/jpeg', quality));
+}
+
+async function uploadReceipts(files) {
+  if (ui.uploading || !files.length) return;
+  let saved = 0;
+  for (let i = 0; i < files.length; i++) {
+    ui.uploading = files.length > 1 ? `Carico ${i + 1} di ${files.length}…` : 'Carico lo scontrino…';
+    render();
+    try {
+      const full = await compressImage(files[i], 2000, 0.82);
+      const thumb = await compressImage(files[i], 420, 0.7);
+      await S.addReceipt({ full, thumb });
+      saved++;
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+  ui.uploading = null;
+  render();
+  if (saved) toast(saved === 1 ? 'Scontrino salvato' : `${saved} scontrini salvati`);
 }
 
 function splitParts(q) {
@@ -337,7 +435,8 @@ function render() {
     }
     return;
   }
-  const view = { spesa: viewSpesa, scorte: viewScorte, scadenze: viewScadenze, aggiungi: viewAggiungi }[ui.tab] || viewSpesa;
+  if (ui.tab === 'scadenze' && !SHOW_EXPIRY) ui.tab = 'spesa';
+  const view = { spesa: viewSpesa, scorte: viewScorte, scadenze: viewScadenze, scontrini: viewScontrini, aggiungi: viewAggiungi }[ui.tab] || viewSpesa;
   const { head, fixed = '', body } = view();
   const key = `tab-${ui.tab}-${fixed ? 'f' : 'n'}`;
   if (app.dataset.key === key) {
@@ -349,6 +448,7 @@ function render() {
     app.innerHTML = `<main class="screen"><div id="v-head">${head}</div><div id="v-fixed">${fixed}</div><div id="v-body">${body}</div></main><div id="v-tabs">${tabbar()}</div>`;
     app.dataset.key = key;
   }
+  if (ui.tab === 'scontrini') fillThumbs();
 }
 
 // ---------- Avvisi ----------
@@ -451,6 +551,18 @@ app.addEventListener('input', (e) => {
   }
 });
 
+// Il selettore di foto vive fuori dalla schermata, così non si perde se la pagina si aggiorna
+// mentre si scatta la foto (su iPhone succede tornando dalla fotocamera)
+const receiptInput = Object.assign(document.createElement('input'), {
+  type: 'file', accept: 'image/*', multiple: true, id: 'receipt-file', hidden: true,
+});
+document.body.appendChild(receiptInput);
+receiptInput.addEventListener('change', () => {
+  const files = [...receiptInput.files];
+  receiptInput.value = '';
+  uploadReceipts(files);
+});
+
 app.addEventListener('keydown', (e) => {
   if (e.target.id !== 'add-q' || e.key !== 'Enter') return;
   e.preventDefault();
@@ -496,11 +608,8 @@ async function handle(act, id, el) {
       break;
     }
     case 'open': openItem(id); break;
-    case 'dec': S.adjustQty(id, -1); break;
-    case 'inc': S.adjustQty(id, 1); break;
-    case 'st-ok': S.setStatus(id, 'ok'); break;
-    case 'st-low': S.setStatus(id, 'low'); toast(`${itemName(id)} in lista`); break;
-    case 'st-out': S.setStatus(id, 'out'); toast(`${itemName(id)} in lista`); break;
+    case 'tolist': S.addToList(id); toast(`${itemName(id)} nella spesa`, { label: 'Annulla', run: () => S.removeFromList(id) }); break;
+    case 'receipt': openReceipt(id); break;
     case 'consumed': S.clearExpiry(id, false); break;
     case 'wasted': S.clearExpiry(id, true); break;
     case 'new': openItem(null); break;
@@ -645,8 +754,8 @@ function openItem(id, preset = {}) {
             : '<p class="note" style="padding:0 0 10px">Lo segni tu con uno swipe nelle Scorte: c\'è, sta finendo, finito.</p>'}
         </div>
         <div class="card">
-          <div class="field"><label>Scadenza</label><input type="date" id="i-exp" data-f="expiry" value="${d.expiry || ''}"></div>
-          ${d.expiry ? '<div class="field"><span></span><button class="link" data-act="no-exp">Togli scadenza</button></div>' : ''}
+          ${SHOW_EXPIRY ? `<div class="field"><label>Scadenza</label><input type="date" id="i-exp" data-f="expiry" value="${d.expiry || ''}"></div>
+          ${d.expiry ? '<div class="field"><span></span><button class="link" data-act="no-exp">Togli scadenza</button></div>' : ''}` : ''}
           <div class="field"><textarea data-f="notes" placeholder="Note: marca, formato…">${esc(d.notes || '')}</textarea></div>
         </div>
         ${existing ? statsCard() : ''}
@@ -731,6 +840,51 @@ function openItem(id, preset = {}) {
   }
 
   showSheet(s);
+}
+
+// Scheda di uno scontrino: foto grande, data, negozio, note
+function openReceipt(id) {
+  const r = S.byId('receipts', id);
+  if (!r) return;
+  const d = { ...r };
+  const showImage = (url) => {
+    const img = document.getElementById('r-img');
+    const link = document.getElementById('r-open');
+    if (img && url) img.src = url;
+    if (link && url) link.href = url;
+  };
+  showSheet({
+    render() {
+      const who = S.memberName(r.by_user);
+      const url = S.cachedReceiptUrl(r.path);
+      return `<div class="sheet-top"><button class="link" data-act="close">Chiudi</button><button class="link" data-act="save">Salva</button></div>
+        <a id="r-open" class="receipt-img" target="_blank" rel="noopener" ${url ? `href="${esc(url)}"` : ''}><img id="r-img" alt="Scontrino" ${url ? `src="${esc(url)}"` : ''}></a>
+        <div class="sub">Caricato ${who ? `da ${esc(who)} ` : ''}${timeAgo(r.created_at)} · tocca la foto per ingrandirla</div>
+        <div class="card">
+          <div class="field"><label>Data</label><input type="date" data-f="taken_on" value="${d.taken_on}"></div>
+          <div class="pick-label">Negozio</div>
+          <div class="pick">${S.sortedStores().map((st) => `<button class="${st.id === d.store_id ? 'on' : ''}" data-act="store" data-v="${st.id}">${esc(st.name)}</button>`).join('')}</div>
+          <div class="field"><textarea data-f="notes" placeholder="Note">${esc(d.notes || '')}</textarea></div>
+        </div>
+        <button class="btn danger block" data-act="del">Elimina scontrino</button>`;
+    },
+    mount() {
+      if (!S.cachedReceiptUrl(r.path)) S.receiptUrls([r.path]).then((u) => showImage(u[r.path])).catch(() => {});
+    },
+    input(el) {
+      if (el.dataset.f === 'notes') d.notes = el.value || null;
+      if (el.dataset.f === 'taken_on' && el.value) d.taken_on = el.value;
+    },
+    async click(act, el) {
+      if (act === 'store') { d.store_id = d.store_id === el.dataset.v ? null : el.dataset.v; refreshSheet(); }
+      else if (act === 'save') { S.updateReceipt(d); closeSheet(); toast('Scontrino salvato'); }
+      else if (act === 'del') {
+        // eslint-disable-next-line no-alert
+        if (!window.confirm('Eliminare questo scontrino? La foto viene cancellata per tutti.')) return;
+        try { await S.deleteReceipt(r.id); closeSheet(); toast('Scontrino eliminato'); } catch (e) { toast(e.message); }
+      }
+    },
+  });
 }
 
 // Scelta del prodotto a cui aggiungere una scadenza

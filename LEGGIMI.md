@@ -5,8 +5,9 @@ Le scorte di casa, condivise in famiglia. Web app da aggiungere alla schermata H
 ## Cosa fa (fase 1)
 
 - **Spesa**: lista di cosa manca, per categoria e filtrabile per negozio. Spunti = comprato (con "Annulla"). Swipe: *Finito* (urgente) o *Togli*.
-- **Scorte**: tutti i prodotti. Swipe: *C'è / Sta finendo / Finito*, oppure *−1 / +1* se ne conti le quantità. Sotto la soglia minima un prodotto va in lista da solo.
-- **Scadenze**: cosa scade a breve. Swipe: *Consumato* o *Buttato*.
+- **Scorte**: tutti i prodotti. Swipe a sinistra: *In spesa* (o *Togli* se c'è già). Le quantità si cambiano dalla scheda del prodotto; sotto la soglia minima un prodotto va in lista da solo.
+- **Scontrini**: si fotografano o si caricano le foto degli scontrini, visibili a tutta la famiglia. Per ora si salvano e basta: serviranno per il menu Spese.
+- **Scadenze**: per ora nascoste (in `js/app.js`, `SHOW_EXPIRY = true` le riattiva; i dati restano).
 - **Aggiungi**: scrivi o detta "latte, uova, pane" e premi Invio. I prodotti nuovi finiscono nella categoria giusta da soli.
 - Ogni azione viene registrata: servirà alla fase 3 per prevedere quando finisce qualcosa (si attiva solo dopo almeno 3 riacquisti in 2 mesi).
 - Funziona offline: le modifiche partono appena torna la rete.
@@ -16,7 +17,7 @@ Le scorte di casa, condivise in famiglia. Web app da aggiungere alla schermata H
 Senza database l'app funziona solo su un telefono. Per condividerla:
 
 1. Su [supabase.com](https://supabase.com/dashboard) crea un **nuovo progetto** `adispensa` (separato da Neonatae), regione **Frankfurt (eu-central-1)**. Salva la password del database nel gestore password.
-2. **SQL Editor** → New query → incolla tutto `supabase/schema.sql` → **Run**.
+2. **SQL Editor** → New query → incolla tutto `supabase/schema.sql` → **Run**. Poi, in una nuova query, `supabase/002_scontrini.sql` → **Run** (crea la tabella e lo spazio privato per le foto degli scontrini).
 3. **Authentication → Sign In / Providers** → attiva **Allow anonymous sign-ins** → Save.
 4. **Project Settings → API Keys**: copia il *Project URL* e la chiave **publishable** (o *anon*) dentro `js/config.js`.
    - Queste due sono fatte per stare nell'app: si possono vedere senza rischi.

@@ -158,6 +158,18 @@ input, textarea, select { font: inherit; color: var(--text); }
 .add-btn { width: 34px; height: 34px; border-radius: 50%; background: var(--chip); display: grid; place-items: center; font-size: 18px; flex: none; margin-right: 2px; }
 .add-btn.on { background: transparent; color: var(--cat-green); }
 
+/* ---------- Scontrini ---------- */
+.upload { margin: 4px 0 6px; cursor: pointer; }
+.upload.busy { opacity: 0.7; pointer-events: none; }
+.upload.busy .ti { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.rgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.rcard { display: flex; flex-direction: column; gap: 5px; text-align: left; min-width: 0; }
+.rcard img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 10px; background: var(--chip); display: block; }
+.rcard span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.receipt-img { display: block; margin: 4px 0 8px; }
+.receipt-img img { width: 100%; max-height: 60vh; object-fit: contain; border-radius: 12px; background: var(--chip); min-height: 220px; display: block; }
+
 /* ---------- Foglio (scheda prodotto, impostazioni) ---------- */
 .sheet-bg { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.35); display: flex; align-items: flex-end; justify-content: center; animation: fade 0.18s ease; }
 .sheet {
