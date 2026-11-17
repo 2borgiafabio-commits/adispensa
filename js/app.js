@@ -2,6 +2,8 @@
 
 import * as S from './store.js';
 import { COLORS } from './seed.js';
+import { parseRoster } from './roster.js';
+import { BENNI, FABIO, benniHours, normalizeTime, buildIcs, parseDay, isoDay } from './shifts.js';
 
 const { state, sync } = S;
 const app = document.getElementById('app');
@@ -14,6 +16,8 @@ const SHOW_EXPIRY = false;
 const ui = {
   tab: pref('tab', 'spesa'),
   uploading: null,
+  month: isoDay(new Date()).slice(0, 7),   // mese mostrato nei Turni: si apre sempre su quello corrente
+  editShifts: false,
   store: 'all',
   scorteQ: '',
   addQ: '',
@@ -98,6 +102,7 @@ function tabbar() {
     ['spesa', 'ti-shopping-cart', 'Spesa', n],
     ['scorte', 'ti-box', 'Scorte', 0],
     SHOW_EXPIRY ? ['scadenze', 'ti-calendar-due', 'Scadenze', expiringSoon()] : ['scontrini', 'ti-receipt', 'Scontrini', 0],
+    ['turni', 'ti-calendar-week', 'Turni', 0],
     ['aggiungi', 'ti-circle-plus', 'Aggiungi', 0],
   ];
   return `<nav class="tabbar">${tabs.map(([k, icon, label, badge]) => `
@@ -275,6 +280,98 @@ function viewScontrini() {
   return { head, body };
 }
 
+// ---------- Turni ----------
+
+const pad2 = (n) => String(n).padStart(2, '0');
+const monthLabel = (ym) => {
+  const [y, m] = ym.split('-').map(Number);
+  return capitalize(new Date(y, m - 1, 1).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }));
+};
+const shiftMonth = (ym, delta) => {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+};
+
+function viewTurni() {
+  const head = header('Turni', ui.editShifts ? 'Modifica: tocca le celle per cambiarle' : `${BENNI.name}, ${FABIO.name} e i vostri piani`);
+  if (state.mode !== 'cloud') {
+    return { head, body: empty('ti-calendar-week', 'Serve la casa condivisa', 'I turni si salvano online: collega la casa alla famiglia da Impostazioni.') };
+  }
+  if (!state.shiftsReady) {
+    return { head, body: empty('ti-database-cog', 'Manca un passaggio sul database', 'Su Supabase va eseguito il file 003_turni.sql (vedi LEGGIMI).') };
+  }
+
+  const [y, m] = ui.month.split('-').map(Number);
+  const n = new Date(y, m, 0).getDate();
+  const today = isoDay(new Date());
+  const photo = S.cachedRosterUrl(ui.month);
+  const rows = [];
+  const tally = { benni: 0, E: 0, L: 0, N: 0 };
+  for (let d = 1; d <= n; d++) {
+    const day = `${ui.month}-${pad2(d)}`;
+    const r = S.getDay(day) || {};
+    const date = new Date(y, m - 1, d);
+    const wd = date.toLocaleDateString('it-IT', { weekday: 'short' }).replace('.', '');
+    const we = date.getDay() === 0 || date.getDay() === 6;
+    const bh = r.benni ? benniHours(day, r.benni_start) : null;
+    const f = r.fabio && FABIO.shifts[r.fabio];
+    if (r.benni) tally.benni++;
+    if (r.fabio in tally) tally[r.fabio]++;
+    rows.push(`<div class="sh-row ${day === today ? 'today' : ''} ${we ? 'we' : ''}" data-day="${day}">
+      <div class="sh-date"><b>${d}</b><small>${wd}</small></div>
+      <div class="sh-cell" data-act="cell-b">${bh ? `<span class="pill-b ${r.benni_start ? 'special' : ''}"><b>${bh[0]}</b><small>fino ${bh[1]}</small></span>` : '<span class="dash">·</span>'}</div>
+      <div class="sh-cell" data-act="cell-f">${f ? `<span class="pill-f" style="--c:${colorVar(f.color)}"><b>${f.label}</b>${f.start ? `<small>${f.start}–${f.end}</small>` : ''}</span>` : '<span class="dash">·</span>'}</div>
+      <div class="sh-cell plan" data-act="cell-p">${r.plan ? esc(r.plan) : ''}</div>
+    </div>`);
+  }
+
+  const nav = `<div class="month-nav">
+      <button class="icon-btn" data-act="month" data-v="-1" aria-label="Mese precedente"><i class="ti ti-chevron-left"></i></button>
+      <div class="month-title">${monthLabel(ui.month)}
+        <small>${BENNI.name} ${plural(tally.benni, 'turno', 'turni')} · ${FABIO.name} ${tally.E} E · ${tally.L} L · ${tally.N} N</small>
+        ${photo ? `<a class="link" href="${esc(photo)}" target="_blank" rel="noopener"><i class="ti ti-photo"></i> Foto dei turni</a>` : ''}
+      </div>
+      <button class="icon-btn" data-act="month" data-v="1" aria-label="Mese successivo"><i class="ti ti-chevron-right"></i></button>
+    </div>`;
+  const table = `<div class="shifts ${ui.editShifts ? 'editing' : ''}">
+      <div class="sh-head"><span></span><span>${BENNI.name}</span><span>${FABIO.name}</span><span>Piani</span></div>
+      ${rows.join('')}
+    </div>`;
+  const actions = `<div class="sh-actions">
+      <button class="btn ${ui.editShifts ? 'primary' : ''}" data-act="shifts-edit"><i class="ti ${ui.editShifts ? 'ti-check' : 'ti-pencil'}"></i>${ui.editShifts ? 'Fine' : 'Modifica'}</button>
+      <button class="btn" data-act="shifts-insert"><i class="ti ti-photo-plus"></i>Inserisci mese</button>
+      <button class="btn icon" data-act="shifts-export" aria-label="Esporta in calendario"><i class="ti ti-calendar-share"></i></button>
+    </div><div style="height:64px"></div>`;
+  return { head, body: nav + table + actions };
+}
+
+// Nei turni, porta in vista la riga di oggi
+function showToday() {
+  const row = document.querySelector('.sh-row.today');
+  if (row && row.getBoundingClientRect().bottom > window.innerHeight - 160) row.scrollIntoView({ block: 'center' });
+}
+
+// Mostra il link alla foto del foglio turni, se per quel mese è stata caricata
+async function fillRosterLink() {
+  const ym = ui.month;
+  if (!S.canUseShifts() || S.cachedRosterUrl(ym) !== undefined) return;
+  try {
+    const url = await S.rosterPhotoUrl(ym);
+    if (url && ui.tab === 'turni' && ui.month === ym) render();
+  } catch { /* offline */ }
+}
+
+function handleShiftCell(act, day) {
+  const r = S.getDay(day) || {};
+  if (!ui.editShifts) { openDay(day, act === 'cell-p' ? 'plan' : null); return; }
+  if (act === 'cell-b') S.setDay(day, { benni: !r.benni, benni_start: null });
+  else if (act === 'cell-f') {
+    const i = FABIO.cycle.indexOf(r.fabio ?? null);
+    S.setDay(day, { fabio: FABIO.cycle[(i + 1) % FABIO.cycle.length] });
+  } else openDay(day, 'plan');
+}
+
 // Carica le anteprime che non hanno ancora il link
 async function fillThumbs() {
   const imgs = [...app.querySelectorAll('img[data-path]:not([src])')];
@@ -436,7 +533,7 @@ function render() {
     return;
   }
   if (ui.tab === 'scadenze' && !SHOW_EXPIRY) ui.tab = 'spesa';
-  const view = { spesa: viewSpesa, scorte: viewScorte, scadenze: viewScadenze, scontrini: viewScontrini, aggiungi: viewAggiungi }[ui.tab] || viewSpesa;
+  const view = { spesa: viewSpesa, scorte: viewScorte, scadenze: viewScadenze, scontrini: viewScontrini, turni: viewTurni, aggiungi: viewAggiungi }[ui.tab] || viewSpesa;
   const { head, fixed = '', body } = view();
   const key = `tab-${ui.tab}-${fixed ? 'f' : 'n'}`;
   if (app.dataset.key === key) {
@@ -449,6 +546,7 @@ function render() {
     app.dataset.key = key;
   }
   if (ui.tab === 'scontrini') fillThumbs();
+  if (ui.tab === 'turni') fillRosterLink();
 }
 
 // ---------- Avvisi ----------
@@ -586,7 +684,9 @@ function itemName(id) { return S.byId('items', id)?.name || ''; }
 async function handle(act, id, el) {
   switch (act) {
     case 'tab':
-      ui.tab = el.dataset.v; setPref('tab', ui.tab); render(); window.scrollTo(0, 0); break;
+      ui.tab = el.dataset.v; setPref('tab', ui.tab); render(); window.scrollTo(0, 0);
+      if (ui.tab === 'turni') showToday();
+      break;
     case 'settings': openSettings(); break;
     case 'store': ui.store = el.dataset.v; render(); break;
     case 'bought': {
@@ -610,6 +710,11 @@ async function handle(act, id, el) {
     case 'open': openItem(id); break;
     case 'tolist': S.addToList(id); toast(`${itemName(id)} nella spesa`, { label: 'Annulla', run: () => S.removeFromList(id) }); break;
     case 'receipt': openReceipt(id); break;
+    case 'month': ui.month = shiftMonth(ui.month, Number(el.dataset.v)); render(); window.scrollTo(0, 0); break;
+    case 'cell-b': case 'cell-f': case 'cell-p': handleShiftCell(act, el.closest('[data-day]').dataset.day); break;
+    case 'shifts-edit': ui.editShifts = !ui.editShifts; render(); break;
+    case 'shifts-insert': openInsertMonth(); break;
+    case 'shifts-export': openExport(); break;
     case 'consumed': S.clearExpiry(id, false); break;
     case 'wasted': S.clearExpiry(id, true); break;
     case 'new': openItem(null); break;
@@ -842,6 +947,186 @@ function openItem(id, preset = {}) {
   showSheet(s);
 }
 
+// Scheda di un giorno: turno di Benedetta, turno di Fabio, piani
+function openDay(day, focus) {
+  const cur = S.getDay(day) || {};
+  const r = { benni: !!cur.benni, benni_start: cur.benni_start || '', fabio: cur.fabio ?? null, plan: cur.plan || '' };
+  const title = capitalize(parseDay(day).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' }));
+  const base = benniHours(day, null);
+  showSheet({
+    render: () => `<div class="sheet-top"><button class="link" data-act="close">Annulla</button><button class="link" data-act="save">Salva</button></div>
+      <h2>${title}</h2>
+      <div class="pick-label">${BENNI.name}</div>
+      <div class="card">
+        <div class="field"><label>Lavora</label><label class="switch"><input type="checkbox" data-f="benni" ${r.benni ? 'checked' : ''}><span></span></label></div>
+        ${r.benni ? `<div class="field"><label>Inizio</label><input type="text" inputmode="decimal" data-f="benni_start" placeholder="${base[0]}" value="${esc(r.benni_start)}"></div>
+          <p class="note" style="padding:0 0 8px">Finisce alle ${base[1]}. Lascia vuoto per l'orario normale.</p>` : ''}
+      </div>
+      <div class="pick-label">${FABIO.name}</div>
+      <div class="card"><div class="pick">${FABIO.cycle.map((k) => {
+        const f = k && FABIO.shifts[k];
+        return `<button class="${r.fabio === k ? 'on' : ''}" data-act="fab" data-v="${k || ''}">${f ? `${f.label}${f.start ? ` <small>${f.start}–${f.end}</small>` : ''}` : 'Nessuno'}</button>`;
+      }).join('')}</div></div>
+      <div class="pick-label">Piani</div>
+      <div class="card"><div class="field"><textarea id="d-plan" data-f="plan" placeholder="Es. cena dai nonni alle 20">${esc(r.plan)}</textarea></div></div>`,
+    change(el) { if (el.dataset.f === 'benni') { r.benni = el.checked; refreshSheet(); } },
+    input(el) { if (el.dataset.f === 'plan') r.plan = el.value; if (el.dataset.f === 'benni_start') r.benni_start = el.value; },
+    click(act, el) {
+      if (act === 'fab') { r.fabio = el.dataset.v || null; refreshSheet(); return; }
+      if (act !== 'save') return;
+      let start = null;
+      if (r.benni && r.benni_start.trim()) {
+        start = normalizeTime(r.benni_start);
+        if (!start) { toast('Orario non valido: scrivi per esempio 13:30'); return; }
+        if (start === base[0]) start = null;
+      }
+      S.setDay(day, { benni: r.benni, benni_start: r.benni ? start : null, fabio: r.fabio, plan: r.plan.trim() || null });
+      closeSheet();
+    },
+    mount() { if (focus === 'plan') document.getElementById('d-plan')?.focus(); },
+  });
+}
+
+// Inserisci mese: foto del foglio di Benedetta → giorni letti dai colori → controllo → salva
+let onRosterFile = null;
+const rosterInput = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*', id: 'roster-file', hidden: true });
+document.body.appendChild(rosterInput);
+rosterInput.addEventListener('change', () => {
+  const f = rosterInput.files[0];
+  rosterInput.value = '';
+  if (f && onRosterFile) onRosterFile(f);
+});
+
+function openInsertMonth() {
+  let ym = ui.month;
+  let file = null;
+  let preview = null;
+  let result = null;
+  let busy = false;
+  const options = Array.from({ length: 14 }, (_, i) => shiftMonth(isoDay(new Date()).slice(0, 7), i - 2));
+  if (!options.includes(ym)) options.push(ym);
+
+  async function analyse() {
+    busy = true;
+    refreshSheet();
+    const [y, m] = ym.split('-').map(Number);
+    try {
+      result = await parseRoster(file, y, m);
+      if (!result.ok) { toast(result.error); result = null; }
+    } catch (e) {
+      toast(e.message);
+      result = null;
+    }
+    busy = false;
+    refreshSheet();
+  }
+
+  async function apply() {
+    const [y, m] = ym.split('-').map(Number);
+    const already = state.shift_days.some((r) => r.day.startsWith(ym) && r.benni);
+    // eslint-disable-next-line no-alert
+    if (already && !window.confirm(`${monthLabel(ym)} ha già dei turni di ${BENNI.name}. Li sostituisco con quelli della foto?`)) return;
+    const works = new Set(result.days.filter((d) => d.works).map((d) => d.day));
+    S.setMonthBenni(y, m, works);
+    busy = true;
+    refreshSheet();
+    try {
+      await S.uploadRosterPhoto(ym, await compressImage(file, 2000, 0.85));
+    } catch (e) {
+      toast(`Turni salvati, ma la foto non è stata caricata: ${e.message}`);
+    }
+    onRosterFile = null;
+    closeSheet();
+    ui.month = ym;
+    ui.editShifts = true;
+    render();
+    window.scrollTo(0, 0);
+    toast(`${plural(works.size, 'turno', 'turni')} di ${BENNI.name} salvati. Correggi gli orari speciali e aggiungi i tuoi.`);
+  }
+
+  onRosterFile = (f) => {
+    file = f;
+    if (preview) URL.revokeObjectURL(preview);
+    preview = URL.createObjectURL(f);
+    analyse();
+  };
+
+  showSheet({
+    render() {
+      const found = result ? result.days.filter((d) => d.works).map((d) => d.day) : [];
+      return `<div class="sheet-top"><button class="link" data-act="close">Chiudi</button><span></span></div>
+        <h2>Inserisci mese</h2>
+        <div class="card"><div class="field"><label for="ins-month">Mese</label>
+          <select id="ins-month" data-f="ym">${options.map((o) => `<option value="${o}" ${o === ym ? 'selected' : ''}>${monthLabel(o)}</option>`).join('')}</select>
+        </div></div>
+        <label class="btn ${result ? '' : 'primary'} block upload ${busy ? 'busy' : ''}" for="roster-file">
+          <i class="ti ${busy ? 'ti-loader-2' : 'ti-photo'}"></i>${busy ? 'Un momento…' : result ? 'Cambia foto' : `Carica la foto dei turni di ${BENNI.name}`}
+        </label>
+        ${result ? `<div class="card">
+            <img class="roster-preview" src="${preview}" alt="Foto dei turni">
+            <p style="margin:6px 0 4px">${BENNI.name} lavora <b>${plural(found.length, 'giorno', 'giorni')}</b> a ${monthLabel(ym).toLowerCase()}:</p>
+            <p class="note" style="padding:0 0 10px">${found.join(', ') || 'nessuno'}${result.warnings.length ? `<br>Righe poco chiare: ${result.warnings.join(', ')}. Controllale dopo.` : ''}</p>
+          </div>
+          <button class="btn primary block" data-act="apply">Salva i turni di ${monthLabel(ym)}</button>`
+          : `<p class="note">Va bene lo screenshot del foglio che manda ${BENNI.name}: leggo i giorni dalle celle rosa (anche nella terza colonna). Dopo puoi correggere gli orari speciali, come il 13.30, e aggiungere i tuoi turni.</p>`}`;
+    },
+    change(el) {
+      if (el.dataset.f === 'ym') { ym = el.value; if (file) analyse(); else refreshSheet(); }
+    },
+    click(act) { if (act === 'apply' && !busy) apply(); },
+  });
+}
+
+// Esporta in calendario (.ics): si apre nel Calendario dell'iPhone o si manda su WhatsApp
+function openExport() {
+  const who = { benni: true, fabio: true, plans: true };
+  let period = 'future';
+  const today = isoDay(new Date());
+  const pick = () => state.shift_days
+    .filter((r) => (period === 'month' ? r.day.startsWith(ui.month) : r.day >= today))
+    .sort((a, b) => a.day.localeCompare(b.day));
+  const file = () => {
+    const { ics, count } = buildIcs(pick(), who);
+    const name = period === 'month' ? `turni-${ui.month}.ics` : `turni-da-${today}.ics`;
+    return { count, file: new File([ics], name, { type: 'text/calendar' }) };
+  };
+  showSheet({
+    render: () => `<div class="sheet-top"><span></span><button class="link" data-act="close">Chiudi</button></div>
+      <h2>Esporta nel calendario</h2>
+      <div class="card">
+        <div class="field"><label>Turni di ${BENNI.name}</label><label class="switch"><input type="checkbox" data-f="benni" ${who.benni ? 'checked' : ''}><span></span></label></div>
+        <div class="field"><label>Turni di ${FABIO.name}</label><label class="switch"><input type="checkbox" data-f="fabio" ${who.fabio ? 'checked' : ''}><span></span></label></div>
+        <div class="field"><label>Piani</label><label class="switch"><input type="checkbox" data-f="plans" ${who.plans ? 'checked' : ''}><span></span></label></div>
+      </div>
+      <div class="card"><div class="pick-label">Periodo</div><div class="pick">
+        <button class="${period === 'future' ? 'on' : ''}" data-act="period" data-v="future">Da oggi in poi</button>
+        <button class="${period === 'month' ? 'on' : ''}" data-act="period" data-v="month">Solo ${monthLabel(ui.month).toLowerCase()}</button>
+      </div></div>
+      <button class="btn primary block" data-act="download"><i class="ti ti-calendar-plus"></i>Aggiungi al Calendario</button>
+      ${navigator.canShare ? '<button class="btn block" data-act="share" style="margin-top:8px"><i class="ti ti-share"></i>Condividi il file</button>' : ''}
+      <p class="note" style="margin-top:10px">Crea un file .ics: aprendolo, il Calendario ti chiede di aggiungere gli eventi. Il turno di notte finisce alle 6 del giorno dopo; riposo non viene esportato.</p>`,
+    change(el) { if (el.dataset.f in who) who[el.dataset.f] = el.checked; },
+    async click(act, el) {
+      if (act === 'period') { period = el.dataset.v; refreshSheet(); return; }
+      if (act !== 'download' && act !== 'share') return;
+      const { count, file: f } = file();
+      if (!count) { toast('Niente da esportare in questo periodo'); return; }
+      if (act === 'share' && navigator.canShare({ files: [f] })) {
+        try { await navigator.share({ files: [f], title: 'Turni' }); } catch { /* annullato */ }
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(f);
+      a.download = f.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      toast(`${plural(count, 'evento', 'eventi')} esportati`);
+    },
+  });
+}
+
 // Scheda di uno scontrino: foto grande, data, negozio, note
 function openReceipt(id) {
   const r = S.byId('receipts', id);
@@ -1053,6 +1338,7 @@ function openNamed({ title, name = '', color = 'gray', withColor = false, onSave
 S.subscribe(render);
 S.init();
 render();
+if (ui.tab === 'turni') setTimeout(showToday, 400);
 
 if ('serviceWorker' in navigator && !new URLSearchParams(location.search).has('nosw')) {
   navigator.serviceWorker.register('sw.js').catch(() => { /* niente offline, pazienza */ });

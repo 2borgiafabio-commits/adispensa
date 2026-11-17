@@ -18,6 +18,7 @@ const COLUMNS = {
     'status', 'on_list', 'expiry', 'notes', 'updated_at', 'updated_by'],
   events: ['id', 'household_id', 'item_id', 'type', 'qty', 'at', 'by_user'],
   receipts: ['id', 'household_id', 'path', 'thumb_path', 'taken_on', 'store_id', 'total', 'notes', 'created_at', 'by_user'],
+  shift_days: ['id', 'household_id', 'day', 'benni', 'benni_start', 'fabio', 'plan', 'updated_at', 'updated_by'],
 };
 const RECEIPTS_BUCKET = 'receipts';
 
@@ -28,6 +29,8 @@ const emptyState = () => ({
   categories: [], stores: [], items: [], events: [], members: [],
   receipts: [],             // scontrini (solo la scheda: le foto stanno nello Storage)
   receiptsReady: true,      // false se sul database manca ancora la parte scontrini
+  shift_days: [],           // turni e piani, una riga per giorno
+  shiftsReady: true,        // false se sul database manca ancora la parte turni
   queue: [],                // modifiche da mandare al database
   lastSync: null,
 });
@@ -403,7 +406,7 @@ export async function createHousehold({ name, nickname, withCommon, cloud }) {
     state.mode = 'local';
     state.me.id = state.me.id || uid();
   }
-  Object.assign(state, { household, categories: [], stores: [], items: [], events: [], receipts: [], queue: [] });
+  Object.assign(state, { household, categories: [], stores: [], items: [], events: [], receipts: [], shift_days: [], queue: [] });
   state.me.nickname = nickname.trim();
   state.members = [{ user_id: state.me.id, nickname: state.me.nickname }];
   seedHousehold(withCommon);
@@ -430,7 +433,7 @@ export async function joinHousehold({ code, nickname }) {
   const h = data[0];
   Object.assign(state, {
     household: { id: h.id, name: h.name, code: h.code }, mode: 'cloud',
-    categories: [], stores: [], items: [], events: [], members: [], receipts: [], queue: [],
+    categories: [], stores: [], items: [], events: [], members: [], receipts: [], shift_days: [], queue: [],
   });
   state.me.nickname = nickname.trim();
   save();
@@ -558,6 +561,78 @@ export async function receiptUrls(paths) {
     data.forEach((x) => { if (x.signedUrl) urlCache.set(x.path, { url: x.signedUrl, exp: now + 3600 * 1000 }); });
   }
   return Object.fromEntries(paths.map((p) => [p, urlCache.get(p)?.url || null]));
+}
+
+// ---------- Turni e piani (una riga per giorno) ----------
+
+export const canUseShifts = () => state.mode === 'cloud' && state.shiftsReady;
+
+// Id fisso per (casa, giorno): così due telefoni che toccano lo stesso giorno scrivono sulla stessa riga
+function hash32(str, seed) {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) ^ (h >>> 13);
+  }
+  return h >>> 0;
+}
+export function dayId(day) {
+  const s = `${state.household.id}|${day}`;
+  const hex = [0x811c9dc5, 0x01000193, 0x9e3779b9, 0x85ebca6b]
+    .map((seed) => hash32(s, seed).toString(16).padStart(8, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function getDay(day) {
+  return state.shift_days.find((r) => r.day === day) || null;
+}
+
+function dayRow(day) {
+  return getDay(day) || {
+    id: dayId(day), household_id: state.household.id, day,
+    benni: false, benni_start: null, fabio: null, plan: null, updated_at: nowIso(), updated_by: null,
+  };
+}
+
+function putDay(day, patch) {
+  const row = { ...dayRow(day), ...patch, updated_by: state.me.id };
+  put('shift_days', row);
+}
+
+export function setDay(day, patch) {
+  putDay(day, patch);
+  commit();
+}
+
+// Applica i giorni di Benedetta letti dalla foto a tutto il mese (gli altri campi restano)
+export function setMonthBenni(year, month, workingDays) {
+  const n = new Date(year, month, 0).getDate();
+  for (let d = 1; d <= n; d++) {
+    const day = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const works = workingDays.has(d);
+    const cur = getDay(day);
+    if ((cur?.benni || false) !== works) putDay(day, { benni: works, benni_start: works ? cur?.benni_start ?? null : null });
+  }
+  commit();
+}
+
+// Foto del foglio turni del mese (sostituisce quella vecchia)
+const rosterPath = (ym) => `${state.household.id}/turni/${ym}.jpg`;
+export async function uploadRosterPhoto(ym, blob) {
+  const c = await ensureSession();
+  const { error } = await c.storage.from(RECEIPTS_BUCKET).upload(rosterPath(ym), blob, { contentType: 'image/jpeg', upsert: true });
+  if (error) throw friendlyError(error);
+  rosterUrls.delete(ym);
+}
+const rosterUrls = new Map();
+export function cachedRosterUrl(ym) { return rosterUrls.get(ym); } // undefined = non so, null = non c'è
+export async function rosterPhotoUrl(ym) {
+  if (rosterUrls.has(ym)) return rosterUrls.get(ym);
+  const c = await ensureSession();
+  const { data, error } = await c.storage.from(RECEIPTS_BUCKET).createSignedUrl(rosterPath(ym), 3600);
+  const url = error ? null : data.signedUrl;
+  rosterUrls.set(ym, url);
+  return url;
 }
 
 // ---------- Sincronizzazione ----------
@@ -693,7 +768,15 @@ export async function pull() {
     if (isNetworkError(err)) throw err;
     state.receiptsReady = false;
   }
-  Object.assign(state, { household: h.data, members: members.data || [], categories, stores, items, events, receipts });
+  let shiftDays = [];
+  try {
+    shiftDays = await fetchAll(c, 'shift_days', (q) => q.eq('household_id', hid));
+    state.shiftsReady = true;
+  } catch (err) {
+    if (isNetworkError(err)) throw err;
+    state.shiftsReady = false;
+  }
+  Object.assign(state, { household: h.data, members: members.data || [], categories, stores, items, events, receipts, shift_days: shiftDays });
   // Riapplico le modifiche locali non ancora inviate
   for (const op of state.queue) {
     if (op.op === 'upsert') upsertLocal(op.table, { ...op.row });
@@ -730,7 +813,7 @@ async function startRealtime() {
     const hid = state.household.id;
     const onChange = () => { clearTimeout(pullTimer); pullTimer = setTimeout(syncNow, 800); };
     channel = c.channel(`casa-${hid}`);
-    ['items', 'categories', 'stores', 'members', 'receipts'].forEach((table) => {
+    ['items', 'categories', 'stores', 'members', 'receipts', 'shift_days'].forEach((table) => {
       channel.on('postgres_changes', { event: '*', schema: 'public', table, filter: `household_id=eq.${hid}` }, onChange);
     });
     channel.subscribe();
