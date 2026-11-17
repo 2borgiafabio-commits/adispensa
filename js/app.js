@@ -319,7 +319,7 @@ function viewTurni() {
     if (r.benni) tally.benni++;
     if (r.fabio in tally) tally[r.fabio]++;
     rows.push(`<div class="sh-row ${day === today ? 'today' : ''} ${we ? 'we' : ''}" data-day="${day}">
-      <div class="sh-date"><b>${d}</b><small>${wd}</small></div>
+      <div class="sh-date"><b>${d}</b><small>${day === today ? 'oggi' : wd}</small></div>
       <div class="sh-cell" data-act="cell-b">${bh ? `<span class="pill-b ${r.benni_start ? 'special' : ''}"><b>${bh[0]}</b><small>fino ${bh[1]}</small></span>` : '<span class="dash">·</span>'}</div>
       <div class="sh-cell" data-act="cell-f">${f ? `<span class="pill-f" style="--c:${colorVar(f.color)}"><b>${f.label}</b>${f.start ? `<small>${f.start}–${f.end}</small>` : ''}</span>` : '<span class="dash">·</span>'}</div>
       <div class="sh-cell plan" data-act="cell-p">${r.plan ? esc(r.plan) : ''}</div>
