@@ -3,7 +3,7 @@
 import * as S from './store.js';
 import { COLORS } from './seed.js';
 import { parseRoster } from './roster.js';
-import { BENNI, FABIO, benniHours, normalizeTime, buildIcs, parseDay, isoDay } from './shifts.js';
+import { BENNI, FABIO, benniHours, normalizeTime, buildIcs, parseDay, isoDay, parseFabioText } from './shifts.js';
 
 const { state, sync } = S;
 const app = document.getElementById('app');
@@ -1051,11 +1051,61 @@ function openInsertMonth() {
     analyse();
   };
 
+  // Turni di Fabio scritti a parole
+  let mode = 'benni';
+  let text = '';
+  let parsed = { days: [], warnings: [] };
+
+  // Giorni consecutivi con lo stesso turno diventano "22–27 nov"
+  function fabioPreview() {
+    if (!text.trim()) return `<p class="note">Scrivi come in un messaggio, anche dettando. Per esempio:<br><i>dal 22 al 27 nov late, il 29 e 30 anche, early dal 6 al 10 dic, night dal 13 al 18, il 26 riposo</i></p>`;
+    const groups = [];
+    for (const d of parsed.days) {
+      const g = groups[groups.length - 1];
+      const prev = g && isoDay(new Date(parseDay(g.to).getTime() + 864e5));
+      if (g && g.fabio === d.fabio && prev === d.day) g.to = d.day; else groups.push({ from: d.day, to: d.day, fabio: d.fabio });
+    }
+    const label = (day, withMonth) => { const dt = parseDay(day); return `${dt.getDate()}${withMonth ? ` ${dt.toLocaleDateString('it-IT', { month: 'short' }).replace('.', '')}` : ''}`; };
+    const changed = parsed.days.filter((d) => { const cur = S.getDay(d.day)?.fabio; return cur && cur !== d.fabio; }).length;
+    const list = groups.map((g) => {
+      const f = FABIO.shifts[g.fabio];
+      const sameMonth = g.from.slice(0, 7) === g.to.slice(0, 7);
+      const when = g.from === g.to ? label(g.from, true) : `${label(g.from, !sameMonth)}–${label(g.to, true)}`;
+      return `<div class="fx-row"><span>${when}</span><span class="pill-f" style="--c:${colorVar(f.color)}"><b>${f.label}</b>${f.start ? `<small>${f.start}–${f.end}</small>` : ''}</span></div>`;
+    }).join('');
+    return `${parsed.days.length ? `<div class="card fx-list">${list}</div>` : ''}
+      <p class="note">${parsed.days.length ? `<b>${plural(parsed.days.length, 'turno', 'turni')}</b> da salvare.` : 'Non trovo ancora date con un turno.'}
+      ${changed ? ` ${plural(changed, 'giorno aveva', 'giorni avevano')} già un turno diverso: lo cambio.` : ''}
+      ${parsed.warnings.length ? `<br>Da controllare: ${esc(parsed.warnings.join('; '))}.` : ''}</p>
+      <button class="btn primary block" data-act="apply-fabio" ${parsed.days.length ? '' : 'disabled'}>Salva i turni di ${FABIO.name}</button>`;
+  }
+
+  function applyFabio() {
+    if (!parsed.days.length) return;
+    S.setFabioDays(parsed.days);
+    onRosterFile = null;
+    closeSheet();
+    ui.month = parsed.days[0].day.slice(0, 7);
+    render();
+    window.scrollTo(0, 0);
+    toast(`${plural(parsed.days.length, 'turno', 'turni')} di ${FABIO.name} salvati.`);
+  }
+
   showSheet({
     render() {
+      const tabs = `<div class="pick" style="padding-top:0">
+          <button class="${mode === 'benni' ? 'on' : ''}" data-act="mode" data-v="benni"><i class="ti ti-photo"></i>${BENNI.name} · foto</button>
+          <button class="${mode === 'fabio' ? 'on' : ''}" data-act="mode" data-v="fabio"><i class="ti ti-pencil"></i>${FABIO.name} · scrivi</button>
+        </div>`;
+      if (mode === 'fabio') {
+        return `<div class="sheet-top"><button class="link" data-act="close">Chiudi</button><span></span></div>
+          <h2>Inserisci mese</h2>${tabs}
+          <div class="card"><textarea id="fx-text" data-f="fabio-text" rows="5" placeholder="dal 22 al 27 nov late…">${esc(text)}</textarea></div>
+          <div id="fx-preview">${fabioPreview()}</div>`;
+      }
       const found = result ? result.days.filter((d) => d.works).map((d) => d.day) : [];
       return `<div class="sheet-top"><button class="link" data-act="close">Chiudi</button><span></span></div>
-        <h2>Inserisci mese</h2>
+        <h2>Inserisci mese</h2>${tabs}
         <div class="card"><div class="field"><label for="ins-month">Mese</label>
           <select id="ins-month" data-f="ym">${options.map((o) => `<option value="${o}" ${o === ym ? 'selected' : ''}>${monthLabel(o)}</option>`).join('')}</select>
         </div></div>
@@ -1073,7 +1123,17 @@ function openInsertMonth() {
     change(el) {
       if (el.dataset.f === 'ym') { ym = el.value; if (file) analyse(); else refreshSheet(); }
     },
-    click(act) { if (act === 'apply' && !busy) apply(); },
+    input(el) {
+      if (el.dataset.f !== 'fabio-text') return;
+      text = el.value;
+      parsed = parseFabioText(text, ui.month);
+      document.getElementById('fx-preview').innerHTML = fabioPreview();
+    },
+    click(act, el) {
+      if (act === 'mode') { mode = el.dataset.v; refreshSheet(); if (mode === 'fabio') document.getElementById('fx-text')?.focus(); return; }
+      if (act === 'apply' && !busy) apply();
+      if (act === 'apply-fabio') applyFabio();
+    },
   });
 }
 

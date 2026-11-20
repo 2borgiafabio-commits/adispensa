@@ -616,6 +616,12 @@ export function setMonthBenni(year, month, workingDays) {
   commit();
 }
 
+// Turni di Fabio scritti a parole: cambia solo i giorni indicati
+export function setFabioDays(entries) {
+  for (const { day, fabio } of entries) if (getDay(day)?.fabio !== fabio) putDay(day, { fabio });
+  commit();
+}
+
 // Foto del foglio turni del mese (sostituisce quella vecchia)
 const rosterPath = (ym) => `${state.household.id}/turni/${ym}.jpg`;
 export async function uploadRosterPhoto(ym, blob) {
