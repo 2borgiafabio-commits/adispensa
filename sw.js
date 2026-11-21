@@ -1,6 +1,6 @@
 // Funzionamento offline: i file dell'app vengono salvati sul telefono.
 // Con la rete si scarica sempre la versione più nuova; senza rete si usa quella salvata.
-const VERSION = 'adispensa-v9';
+const VERSION = 'adispensa-v10';
 const SHELL = [
   './',
   './index.html',
@@ -11,6 +11,7 @@ const SHELL = [
   './js/config.js',
   './js/roster.js',
   './js/shifts.js',
+  './js/icons.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

@@ -3,6 +3,7 @@
 import * as S from './store.js';
 import { COLORS } from './seed.js';
 import { parseRoster } from './roster.js';
+import { itemIcon } from './icons.js';
 import { BENNI, FABIO, benniHours, normalizeTime, buildIcs, parseDay, isoDay, parseFabioText } from './shifts.js';
 
 const { state, sync } = S;
@@ -119,7 +120,7 @@ function empty(icon, title, text, cta, ctaAct, ctaV = '') {
 function swRow(it, { left = '', right = '', sub = '', subCls = '', actions = [] }) {
   return `<div class="sw" data-id="${it.id}">
     <div class="sw-actions">${actions.map((a) => `<button class="${a.cls}" data-act="${a.act}"><i class="ti ${a.icon}"></i>${a.label}</button>`).join('')}</div>
-    <div class="sw-row">${left}
+    <div class="sw-row">${left}${itemIcon(it.name)}
       <div class="nm" data-act="open">${esc(it.name)}${sub ? `<small class="${subCls}">${sub}</small>` : ''}</div>${right}
     </div>
   </div>`;
@@ -167,13 +168,11 @@ function viewSpesa() {
   return { head, body };
 }
 
-function scorteMeta(it) {
-  if (S.isTracked(it)) {
-    const text = it.min_qty !== null && it.min_qty !== undefined ? `${fmt(it.qty)} / ${fmt(it.min_qty)}` : `${fmt(it.qty)}${it.unit ? ` ${esc(it.unit)}` : ''}`;
-    return `<span class="meta ${it.status}">${text}</span>`;
-  }
-  const text = { ok: '', low: 'sta finendo', out: 'finito' }[it.status];
-  return text ? `<span class="meta ${it.status}">${text}</span>` : '';
+// Cerchio con il + : mette il prodotto nella spesa (se c'è già diventa una spunta e lo toglie)
+function addButton(it) {
+  return it.on_list
+    ? `<button class="addc on" data-act="unlist" aria-label="Già nella spesa, tocca per toglierlo"><i class="ti ti-check"></i></button>`
+    : `<button class="addc" data-act="tolist" aria-label="Metti nella spesa"><i class="ti ti-plus"></i></button>`;
 }
 
 function viewScorte() {
@@ -188,7 +187,7 @@ function viewScorte() {
   }
   // Swipe a sinistra: un solo gesto, "mettilo nella spesa" (o toglilo se c'è già)
   const row = (it) => swRow(it, {
-    right: `${it.on_list ? '<i class="ti ti-shopping-cart in-list" aria-label="In lista"></i>' : ''}${scorteMeta(it)}`,
+    right: addButton(it),
     actions: it.on_list
       ? [{ act: 'unlist', label: 'Togli', cls: 'a-gray', icon: 'ti-x' }]
       : [{ act: 'tolist', label: 'In spesa', cls: 'a-ok', icon: 'ti-shopping-cart-plus' }],
@@ -582,7 +581,7 @@ function closeOpenRow() {
 
 app.addEventListener('pointerdown', (e) => {
   const row = e.target.closest('.sw .sw-row');
-  if (!row || e.target.closest('[data-act="bought"]')) return;
+  if (!row || e.target.closest('[data-act="bought"], .addc')) return;
   drag = { row, x: e.clientX, y: e.clientY, base: row === openRow ? -actionsWidth(row) : 0, dx: 0, horiz: null, pid: e.pointerId };
 });
 app.addEventListener('pointermove', (e) => {
