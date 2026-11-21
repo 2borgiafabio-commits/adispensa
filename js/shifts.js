@@ -1,6 +1,6 @@
 // Turni: orari di Benedetta e Fabio, ed esportazione in calendario (iCal / .ics).
 
-// Benedetta: da lunedì a giovedì 15:30-20:30, da venerdì a domenica 15:30-23:30
+// Benedetta: domenica e da lunedì a giovedì 15:30-20:30, venerdì e sabato 15:30-23:30
 export const BENNI = { name: 'Benedetta', weekday: ['15:30', '20:30'], weekend: ['15:30', '23:30'] };
 
 // Fabio: tre turni, più riposo e ferie
@@ -22,7 +22,7 @@ export const isoDay = (date) => `${date.getFullYear()}-${String(date.getMonth() 
 // Orario di Benedetta per un giorno (con l'eventuale inizio diverso, es. 13:30)
 export function benniHours(day, start) {
   const wd = parseDay(day).getDay(); // 0 = domenica
-  const base = wd === 0 || wd >= 5 ? BENNI.weekend : BENNI.weekday;
+  const base = wd >= 5 ? BENNI.weekend : BENNI.weekday; // ven, sab
   return [start || base[0], base[1]];
 }
 
