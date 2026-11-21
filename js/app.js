@@ -120,7 +120,7 @@ function empty(icon, title, text, cta, ctaAct, ctaV = '') {
 function swRow(it, { left = '', right = '', sub = '', subCls = '', actions = [] }) {
   return `<div class="sw" data-id="${it.id}">
     <div class="sw-actions">${actions.map((a) => `<button class="${a.cls}" data-act="${a.act}"><i class="ti ${a.icon}"></i>${a.label}</button>`).join('')}</div>
-    <div class="sw-row">${left}${itemIcon(it.name)}
+    <div class="sw-row">${left}${itemIcon(it.name, catOf(it)?.name)}
       <div class="nm" data-act="open">${esc(it.name)}${sub ? `<small class="${subCls}">${sub}</small>` : ''}</div>${right}
     </div>
   </div>`;
